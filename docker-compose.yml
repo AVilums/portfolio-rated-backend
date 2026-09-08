@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: risk
+      POSTGRES_USER: risk
+      POSTGRES_PASSWORD: risk
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U risk -d risk"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://risk:risk@postgres:5432/risk
+      APP_ENV: local
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["uvicorn", "risk_platform.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  worker:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://risk:risk@postgres:5432/risk
+      APP_ENV: local
+      WORKER_POLL_INTERVAL_SECONDS: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["python", "-m", "risk_platform.worker.main"]
+
+volumes:
+  postgres-data:

@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: risk-platform-config
+data:
+  APP_ENV: local
+  LOG_LEVEL: INFO
+  MARKET_DATA_MAX_AGE_SECONDS: "300"
+  WORKER_POLL_INTERVAL_SECONDS: "5"
