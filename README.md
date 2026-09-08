@@ -1,63 +1,128 @@
 # Market Risk Control Platform
 
-This project is a learning and interview system for deterministic market-risk controls. It uses a layered modular FastAPI application, PostgreSQL, SQLAlchemy/Alembic, and separate API and worker workloads. The API and worker share domain and persistence code; they have different runtime responsibilities.
+A small FastAPI and PostgreSQL service for deterministic market-risk calculations. The application is packaged as a modular monolith with a REST API, SQLAlchemy persistence models, Alembic migrations, Docker Compose support, and Kubernetes manifests for local clusters.
 
-## Start the first slice
+## Current capabilities
 
-```bash
-docker compose up --build
-curl http://localhost:8000/v1/health/live
-curl -X POST http://localhost:8000/v1/risk/historical-var -H "content-type: application/json" -d '{"losses":[1,3,2,4],"confidence":0.75}'
+- FastAPI API with versioned routes
+- Liveness and database readiness endpoints
+- Deterministic historical VaR calculation
+- SQLAlchemy models for portfolios, positions, market prices, risk calculations, and audit events
+- Alembic migration setup
+- Prometheus-compatible `/metrics` endpoint
+- Docker Compose and Kubernetes deployment templates
+
+The current VaR endpoint calculates and returns a result synchronously. Persistence-backed portfolio workflows and stored risk calculations can be added incrementally.
+
+## Run locally with Docker Compose
+
+Start the API and PostgreSQL:
+
+```powershell
+docker compose up --build -d
+docker compose ps
 ```
 
-On PowerShell, use `curl.exe` instead of the `curl` alias, or use `Invoke-RestMethod`. Health endpoints are versioned at `/v1/health/live` and `/v1/health/ready`.
+Check the service:
 
-## Application layout
+```powershell
+Invoke-RestMethod http://localhost:8000/v1/health/live
+Invoke-RestMethod http://localhost:8000/v1/health/ready
+```
 
-`src/risk_platform` is organized by application responsibility:
+Calculate historical VaR in PowerShell:
 
-- `api/` contains versioned FastAPI routers and dependencies.
-- `core/` contains settings, logging, and database session wiring.
-- `features/` contains business capabilities such as risk.
-- `models/` contains SQLAlchemy persistence models.
-- `worker/` contains the background process entry point.
+```powershell
+$body = @{
+    losses = @(1, 3, 2, 4)
+    confidence = 0.75
+} | ConvertTo-Json
 
-The risk calculation in `features/risk/calculations.py` is pure and independent of FastAPI and SQLAlchemy. The worker currently provides a healthy executable shell; job claiming is the next implementation increment.
+Invoke-RestMethod `
+  -Uri "http://localhost:8000/v1/risk/historical-var" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+```
 
-## Kubernetes locally
+Useful endpoints:
 
-Build the image into a local kind cluster and apply the local overlay:
+```text
+http://localhost:8000/docs
+http://localhost:8000/metrics
+```
 
-```bash
+Stop the local services with:
+
+```powershell
+docker compose down
+```
+
+## Run locally on Kubernetes with kind
+
+Create or verify a kind cluster:
+
+```powershell
+kind create cluster --name kind --wait 5m
+kubectl config use-context kind-kind
+kubectl cluster-info
+kubectl get nodes
+```
+
+Build and load the application image:
+
+```powershell
 docker build -t portfolio-risk-api:local .
-kind load docker-image portfolio-risk-api:local
+kind load docker-image portfolio-risk-api:local --name kind
+```
+
+Apply the local Kubernetes overlay:
+
+```powershell
 kubectl apply -k k8s/environments/local
+kubectl -n risk-platform get pods
+```
+
+Forward the API service to the host:
+
+```powershell
 kubectl -n risk-platform port-forward service/risk-api 8000:8000
 ```
 
-The Kubernetes base includes a Postgres Deployment with a PVC, API and worker Deployments, Services, ConfigMap, Secret, resource requests/limits, and health probes. The Secret contains development credentials only and should be replaced by a cluster secret manager for shared environments.
+The Kubernetes base includes an API Deployment, PostgreSQL Deployment, Services, ConfigMap, Secret, PVC, resource limits, and health probes. The Secret contains development credentials and should be replaced with a managed secret in shared environments.
 
-The authoritative calculation is the pure function in `src/risk_platform/risk.py`. An optional LLM integration, if added later, may explain persisted results but must never produce the risk number.
-
-## Architecture
+## Project layout
 
 ```text
-Clients / controls UI
-          |
-       REST API  -----> PostgreSQL (portfolios, positions, prices, risk, audit)
-          ^                         ^
-          |                         |
-       /metrics                 Risk worker
-                          (polls jobs, calculates, persists)
+src/risk_platform/
+├── api/             FastAPI routers and dependencies
+├── core/            Configuration, logging, and database wiring
+├── features/        Business capabilities and risk calculations
+├── models/          SQLAlchemy persistence models
+└── main.py          Application entry point
+
+migrations/          Alembic environment and revisions
+tests/unit/           Pure calculation tests
+tests/integration/    API tests
+k8s/                  Kubernetes base and local overlay
 ```
 
-## Development roadmap
+The risk calculation in `src/risk_platform/features/risk/calculations.py` is pure and independent of FastAPI and SQLAlchemy. This keeps the authoritative calculation easy to test and reproduce.
+
+## Development checks
+
+```powershell
+.\.venv\Scripts\ruff.exe check .
+.\.venv\Scripts\mypy.exe src
+.\.venv\Scripts\python.exe -m pytest
+docker compose config --quiet
+kubectl kustomize k8s/environments/local
+```
+
+## Roadmap
 
 1. Add portfolio, position, and market-price CRUD with validation and idempotency keys.
-2. Add a market-data ingestion boundary, stale-data checks, retry/backoff, and an outbox/audit event writer.
-3. Add a database-backed risk job table and worker loop. Make job claiming safe with row locks and a lease.
-4. Add integration tests against PostgreSQL, structured JSON logs, timeout/error middleware, and richer Prometheus metrics.
-5. Add Docker Compose API/worker migrations and Kubernetes manifests with Secrets, ConfigMaps, probes, resource limits, and a Postgres PVC.
-6. Add CI for lint, type checking, unit/API tests, migration checks, image build, and a local kind deployment.
-
-The design keeps the API and worker as separate deployable workloads without splitting the domain into premature microservices.
+2. Add market-data freshness checks, retries, timeouts, and audit event persistence.
+3. Persist risk calculations with input snapshots and algorithm versions.
+4. Add PostgreSQL integration tests and structured JSON logging.
+5. Add CI for linting, type checking, tests, migrations, image builds, and Kubernetes manifest validation.

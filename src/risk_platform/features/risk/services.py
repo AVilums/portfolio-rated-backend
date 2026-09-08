@@ -6,7 +6,7 @@ class RiskService:
     """Application orchestration for risk use cases.
 
     Persistence is intentionally not required by the first pure-calculation slice.
-    The repository dependency will be injected here when risk jobs are added.
+    A repository dependency can be injected when stored calculations are added.
     """
 
     def calculate_historical_var(self, request: VaRRequest) -> VaRResponse:

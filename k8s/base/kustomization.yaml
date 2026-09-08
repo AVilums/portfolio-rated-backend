@@ -7,4 +7,3 @@ resources:
   - secret.yaml
   - postgres.yaml
   - api.yaml
-  - worker.yaml

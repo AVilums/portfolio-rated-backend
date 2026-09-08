@@ -27,16 +27,5 @@ services:
         condition: service_healthy
     command: ["uvicorn", "risk_platform.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
-  worker:
-    build: .
-    environment:
-      DATABASE_URL: postgresql+psycopg://risk:risk@postgres:5432/risk
-      APP_ENV: local
-      WORKER_POLL_INTERVAL_SECONDS: 5
-    depends_on:
-      postgres:
-        condition: service_healthy
-    command: ["python", "-m", "risk_platform.worker.main"]
-
 volumes:
   postgres-data:

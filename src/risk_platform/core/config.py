@@ -9,7 +9,6 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     database_url: str = "postgresql+psycopg://risk:risk@localhost:5432/risk"
     market_data_max_age_seconds: int = 300
-    worker_poll_interval_seconds: int = 5
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
