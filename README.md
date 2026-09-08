@@ -1,4 +1,4 @@
-# Market Risk Control Platform
+# Portfolio Risk Service
 
 A small FastAPI and PostgreSQL service for deterministic market-risk calculations. The application is packaged as a modular monolith with a REST API, SQLAlchemy persistence models, Alembic migrations, Docker Compose support, and Kubernetes manifests for local clusters.
 

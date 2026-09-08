@@ -1,7 +1,7 @@
 [project]
 name = "portfolio-risk-api"
 version = "0.1.0"
-description = "A deliberately simple market risk control platform"
+description = "A deliberately simple Portfolio Risk Service"
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.13,<2",

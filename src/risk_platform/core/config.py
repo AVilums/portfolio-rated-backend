@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Market Risk Control Platform"
+    app_name: str = "Portfolio Risk Service"
     app_env: str = "local"
     log_level: str = "INFO"
     database_url: str = "postgresql+psycopg://risk:risk@localhost:5432/risk"

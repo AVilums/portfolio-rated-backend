@@ -1,1 +1,1 @@
-"""Market risk control platform."""
+"""Portfolio Risk Service."""
