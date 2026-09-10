@@ -1,16 +1,18 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Portfolio Risk Service"
-    app_env: str = "local"
-    log_level: str = "INFO"
     database_url: str = "postgresql+psycopg://risk:risk@localhost:5432/risk"
-    market_data_max_age_seconds: int = 300
-
+    app_env: Literal["local", "test", "production"] = "production"
+    session_hours: int = 12
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def secure_cookies(self) -> bool:
+        return self.app_env == "production"
 
 
 @lru_cache

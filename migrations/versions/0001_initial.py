@@ -2,6 +2,7 @@
 
 Revision ID: 0001_initial
 """
+
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql

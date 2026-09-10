@@ -1,19 +1,32 @@
+name: portfolio-rated
 services:
   postgres:
     image: postgres:16-alpine
+    ports:
+      - "127.0.0.1:5433:5432"
     environment:
       POSTGRES_DB: risk
       POSTGRES_USER: risk
       POSTGRES_PASSWORD: risk
-    ports:
-      - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U risk -d risk"]
-      interval: 5s
+      interval: 3s
       timeout: 3s
-      retries: 10
+      retries: 20
+
+  migrate:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://risk:risk@postgres:5432/risk
+      APP_ENV: local
+      INITIAL_EMAIL: ${INITIAL_EMAIL:-demo@example.com}
+      INITIAL_PASSWORD: ${INITIAL_PASSWORD:-local-portfolio-password}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && python -m risk_platform.seed"]
 
   api:
     build: .
@@ -21,11 +34,57 @@ services:
       DATABASE_URL: postgresql+psycopg://risk:risk@postgres:5432/risk
       APP_ENV: local
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
-      postgres:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build: ../portfolio-rated-frontend
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      api:
         condition: service_healthy
-    command: ["uvicorn", "risk_platform.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  test-db:
+    image: postgres:16-alpine
+    profiles: ["test"]
+    environment:
+      POSTGRES_DB: risk_test
+      POSTGRES_USER: risk
+      POSTGRES_PASSWORD: risk
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U risk -d risk_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  test:
+    build:
+      context: .
+      target: test
+    profiles: ["test"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://risk:risk@test-db:5432/risk_test
+      TEST_DATABASE_URL: postgresql+psycopg://risk:risk@test-db:5432/risk_test
+      APP_ENV: test
+    depends_on:
+      test-db:
+        condition: service_healthy
+    command: ["sh", "-c", "alembic upgrade head && pytest -q -p no:cacheprovider"]
 
 volumes:
   postgres-data:

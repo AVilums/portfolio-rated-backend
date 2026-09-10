@@ -1,128 +1,102 @@
-# Portfolio Risk Service
+# Portfolio Rated API
 
-A small FastAPI and PostgreSQL service for deterministic market-risk calculations. The application is packaged as a modular monolith with a REST API, SQLAlchemy persistence models, Alembic migrations, Docker Compose support, and Kubernetes manifests for local clusters.
+A small synchronous FastAPI application with SQLAlchemy, Alembic and PostgreSQL.
 
-## Current capabilities
+## Run
 
-- FastAPI API with versioned routes
-- Liveness and database readiness endpoints
-- Deterministic historical VaR calculation
-- SQLAlchemy models for portfolios, positions, market prices, risk calculations, and audit events
-- Alembic migration setup
-- Prometheus-compatible `/metrics` endpoint
-- Docker Compose and Kubernetes deployment templates
+Keep `portfolio-rated-frontend` beside this repository, then:
 
-The current VaR endpoint calculates and returns a result synchronously. Persistence-backed portfolio workflows and stored risk calculations can be added incrementally.
-
-## Run locally with Docker Compose
-
-Start the API and PostgreSQL:
-
-```powershell
+```sh
 docker compose up --build -d
-docker compose ps
 ```
 
-Check the service:
+Web app: http://localhost:8080
+API docs: http://localhost:8000/api/docs
+Local login: `demo@example.com` / `local-portfolio-password`
 
-```powershell
-Invoke-RestMethod http://localhost:8000/v1/health/live
-Invoke-RestMethod http://localhost:8000/v1/health/ready
-```
+Compose starts PostgreSQL, applies migrations, creates the initial account if
+missing, then starts the API and frontend. PostgreSQL data lives in a named volume.
+The database has no host port. `docker compose down` preserves the volume.
 
-Calculate historical VaR in PowerShell:
+Local credentials appear only in the development Compose configuration.
+Override `INITIAL_EMAIL` and `INITIAL_PASSWORD` before first startup if desired.
+Seeding is idempotent and never replaces an existing password.
 
-```powershell
-$body = @{
-    losses = @(1, 3, 2, 4)
-    confidence = 0.75
-} | ConvertTo-Json
-
-Invoke-RestMethod `
-  -Uri "http://localhost:8000/v1/risk/historical-var" `
-  -Method Post `
-  -ContentType "application/json" `
-  -Body $body
-```
-
-Useful endpoints:
-
-```text
-http://localhost:8000/docs
-http://localhost:8000/metrics
-```
-
-Stop the local services with:
-
-```powershell
-docker compose down
-```
-
-## Run locally on Kubernetes with kind
-
-Create or verify a kind cluster:
-
-```powershell
-kind create cluster --name kind --wait 5m
-kubectl config use-context kind-kind
-kubectl cluster-info
-kubectl get nodes
-```
-
-Build and load the application image:
-
-```powershell
-docker build -t portfolio-risk-api:local .
-kind load docker-image portfolio-risk-api:local --name kind
-```
-
-Apply the local Kubernetes overlay:
-
-```powershell
-kubectl apply -k k8s/environments/local
-kubectl -n risk-platform get pods
-```
-
-Forward the API service to the host:
-
-```powershell
-kubectl -n risk-platform port-forward service/risk-api 8000:8000
-```
-
-The Kubernetes base includes an API Deployment, PostgreSQL Deployment, Services, ConfigMap, Secret, PVC, resource limits, and health probes. The Secret contains development credentials and should be replaced with a managed secret in shared environments.
-
-## Project layout
+## Structure
 
 ```text
 src/risk_platform/
-├── api/             FastAPI routers and dependencies
-├── core/            Configuration, logging, and database wiring
-├── features/        Business capabilities and risk calculations
-├── models/          SQLAlchemy persistence models
-└── main.py          Application entry point
-
-migrations/          Alembic environment and revisions
-tests/unit/           Pure calculation tests
-tests/integration/    API tests
-k8s/                  Kubernetes base and local overlay
+  config.py       Environment configuration
+  database.py     Engine and per-request database session
+  models.py       Users, login sessions, report snapshots
+  auth.py         Password verification, sessions, login throttling
+  portfolio.py    Input contract, allocation calculations, report routes
+  main.py         Application, request protection and safe errors
+  seed.py         Explicit initial-account creation
+migrations/       Versioned schema changes
+tests/            Calculation and PostgreSQL API tests
 ```
 
-The risk calculation in `src/risk_platform/features/risk/calculations.py` is pure and independent of FastAPI and SQLAlchemy. This keeps the authoritative calculation easy to test and reproduce.
+There are no repository/service wrappers, async database plumbing, Kubernetes
+manifests, or metrics stack. The original `0001_initial` migration is preserved
+for compatibility with existing databases. Its tables are unused by this app;
+`0002_application` adds the three active tables without modifying existing data.
 
-## Development checks
+## API
 
-```powershell
-.\.venv\Scripts\ruff.exe check .
-.\.venv\Scripts\mypy.exe src
-.\.venv\Scripts\python.exe -m pytest
-docker compose config --quiet
-kubectl kustomize k8s/environments/local
+All routes begin with `/api/v1`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | /auth/login | Verify credentials and set session cookie |
+| GET | /auth/session | Current account |
+| POST | /auth/logout | Revoke session |
+| POST | /portfolio/analyse | Validate, calculate and save a report |
+| GET | /portfolio/latest | Latest report for the current account, or null |
+| GET | /portfolio/reports/{id} | Owned report; other accounts receive 404 |
+| GET | /health | Database readiness |
+
+Mutation requests require `X-Requested-With: PortfolioRated`. Cross-site browser
+requests are rejected; CORS is intentionally not enabled. The frontend uses a
+same-origin proxy. Validation errors do not echo submitted data, and database
+errors return a generic message.
+
+Passwords use PBKDF2-HMAC-SHA256 with random salts and 600,000 iterations.
+Opaque session tokens are stored as SHA-256 hashes; cookies are HTTP-only,
+SameSite=Strict and expire after 12 hours. Production mode also requires Secure
+cookies. Five failed attempts lock a known account for five minutes.
+
+## Calculations
+
+For allocation fractions `w`, concentration is `100 Ã— sum(wÂ²)`; effective
+positions is `1 / sum(wÂ²)`. Lower concentration means more evenly spread entered
+weights. A single position yields concentration 100 and one effective position.
+Results use decimal arithmetic and round to two decimal places.
+
+These are allocation statistics, not an assessment of investment quality or risk.
+Inputs cannot reveal ETF overlap, geography, correlations or underlying holdings.
+Reports store normalized inputs and a versioned analysis snapshot.
+
+## Checks
+
+```sh
+docker compose --profile test run --build --rm test
+docker compose --profile test stop test-db
 ```
 
-## Roadmap
+The test profile migrates a separate ephemeral PostgreSQL database. Each test uses
+an outer transaction and rolls back endpoint commits after completion.
 
-1. Add portfolio, position, and market-price CRUD with validation and idempotency keys.
-2. Add market-data freshness checks, retries, timeouts, and audit event persistence.
-3. Persist risk calculations with input snapshots and algorithm versions.
-4. Add PostgreSQL integration tests and structured JSON logging.
-5. Add CI for linting, type checking, tests, migrations, image builds, and Kubernetes manifest validation.
+For local Python tooling, create a virtual environment and install `.[dev]`:
+
+```sh
+python -m pip install -e ".[dev]"
+python -m ruff check .
+python -m ruff format --check .
+python -m mypy src
+python -m pytest -m "not integration"
+```
+
+For a separate local API process, configure `DATABASE_URL` for your own PostgreSQL
+database, set `APP_ENV=local`, apply `alembic upgrade head`, and run
+`uvicorn risk_platform.main:app --reload`. Compose already runs the API on port 8000.
