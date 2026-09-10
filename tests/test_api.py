@@ -94,6 +94,31 @@ def test_login_save_restore_logout(client: TestClient, account: User, db: Sessio
     assert client.get("/api/v1/portfolio/latest").json() == report
 
 
+def test_register_starts_session_and_rejects_duplicate(client: TestClient, db: Session) -> None:
+    email = f"{uuid4()}@example.com"
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": f"  {email.upper()}  ", "password": PASSWORD},
+    )
+    assert response.status_code == 201
+    assert response.json()["email"] == email
+    assert client.get("/api/v1/auth/session").status_code == 200
+    assert db.scalar(select(User).where(User.email == email)) is not None
+    client.post("/api/v1/auth/logout")
+    duplicate = client.post(
+        "/api/v1/auth/register", json={"email": email, "password": PASSWORD}
+    )
+    assert duplicate.status_code == 409
+
+
+def test_register_requires_a_strong_password(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/auth/register",
+        json={"email": f"{uuid4()}@example.com", "password": "too-short"},
+    )
+    assert response.status_code == 422
+
+
 def test_other_account_cannot_read_report(client: TestClient, account: User, db: Session) -> None:
     login(client, account)
     report = client.post("/api/v1/portfolio/analyse", json=PAYLOAD).json()

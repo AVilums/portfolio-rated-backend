@@ -48,6 +48,7 @@ All routes begin with `/api/v1`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
+| POST | /auth/register | Create an account and set session cookie |
 | POST | /auth/login | Verify credentials and set session cookie |
 | GET | /auth/session | Current account |
 | POST | /auth/logout | Revoke session |

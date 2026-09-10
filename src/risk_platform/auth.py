@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from risk_platform.config import get_settings
@@ -50,6 +51,10 @@ class Credentials(BaseModel):
         return value.strip().lower() if isinstance(value, str) else value
 
 
+class Registration(Credentials):
+    password: str = Field(min_length=12, max_length=128)
+
+
 class UserResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
@@ -70,27 +75,8 @@ def current_user(request: Request, db: Db) -> User:
 CurrentUser = Annotated[User, Depends(current_user)]
 
 
-@router.post("/login", response_model=UserResponse)
-def login(credentials: Credentials, request: Request, response: Response, db: Db) -> User:
-    # Serialize known-account attempts so concurrent requests cannot bypass the lock.
-    user = db.scalar(select(User).where(User.email == credentials.email).with_for_update())
+def start_session(user: User, request: Request, response: Response, db: Session) -> None:
     now = datetime.now(UTC)
-    valid = verify_password(credentials.password, user.password_hash if user else DUMMY_HASH)
-    if user is None:
-        raise HTTPException(401, "Email or password is incorrect.")
-    if user.locked_until and user.locked_until > now:
-        raise HTTPException(429, "Too many attempts. Try again in five minutes.")
-    if not valid:
-        if user.locked_until:
-            user.failed_attempts = 0
-            user.locked_until = None
-        user.failed_attempts += 1
-        if user.failed_attempts >= 5:
-            user.locked_until = now + timedelta(minutes=5)
-        db.commit()
-        raise HTTPException(401, "Email or password is incorrect.")
-    user.failed_attempts = 0
-    user.locked_until = None
     db.execute(delete(LoginSession).where(LoginSession.expires_at <= now))
     previous = request.cookies.get(COOKIE_NAME)
     if previous:
@@ -114,6 +100,45 @@ def login(credentials: Credentials, request: Request, response: Response, db: Db
         samesite="strict",
         path="/api",
     )
+
+
+@router.post("/register", response_model=UserResponse, status_code=201)
+def register(registration: Registration, request: Request, response: Response, db: Db) -> User:
+    if db.scalar(select(User.id).where(User.email == registration.email)) is not None:
+        raise HTTPException(409, "An account already exists for this email.")
+    user = User(email=registration.email, password_hash=hash_password(registration.password))
+    db.add(user)
+    try:
+        db.flush()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(409, "An account already exists for this email.") from error
+    start_session(user, request, response, db)
+    return user
+
+
+@router.post("/login", response_model=UserResponse)
+def login(credentials: Credentials, request: Request, response: Response, db: Db) -> User:
+    # Serialize known-account attempts so concurrent requests cannot bypass the lock.
+    user = db.scalar(select(User).where(User.email == credentials.email).with_for_update())
+    now = datetime.now(UTC)
+    valid = verify_password(credentials.password, user.password_hash if user else DUMMY_HASH)
+    if user is None:
+        raise HTTPException(401, "Email or password is incorrect.")
+    if user.locked_until and user.locked_until > now:
+        raise HTTPException(429, "Too many attempts. Try again in five minutes.")
+    if not valid:
+        if user.locked_until:
+            user.failed_attempts = 0
+            user.locked_until = None
+        user.failed_attempts += 1
+        if user.failed_attempts >= 5:
+            user.locked_until = now + timedelta(minutes=5)
+        db.commit()
+        raise HTTPException(401, "Email or password is incorrect.")
+    user.failed_attempts = 0
+    user.locked_until = None
+    start_session(user, request, response, db)
     return user
 
 
