@@ -12,6 +12,7 @@ from starlette.responses import Response
 
 from risk_platform import auth, portfolio
 from risk_platform.database import engine
+from risk_platform.market_data.routes import router as market_data_router
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ app = FastAPI(
 )
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(portfolio.router, prefix="/api/v1")
+app.include_router(market_data_router, prefix="/api/v1")
 
 
 @app.middleware("http")

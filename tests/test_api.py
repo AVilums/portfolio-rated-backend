@@ -1,6 +1,8 @@
+import json
 import os
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -12,6 +14,9 @@ from risk_platform.auth import COOKIE_NAME, hash_password, token_hash
 from risk_platform.config import get_settings
 from risk_platform.database import get_db
 from risk_platform.main import app
+from risk_platform.market_data.connectors import JsonFileConnector
+from risk_platform.market_data.models import EtfDataSnapshot
+from risk_platform.market_data.service import ingest, latest
 from risk_platform.models import LoginSession, Report, User
 
 pytestmark = pytest.mark.integration
@@ -105,9 +110,7 @@ def test_register_starts_session_and_rejects_duplicate(client: TestClient, db: S
     assert client.get("/api/v1/auth/session").status_code == 200
     assert db.scalar(select(User).where(User.email == email)) is not None
     client.post("/api/v1/auth/logout")
-    duplicate = client.post(
-        "/api/v1/auth/register", json={"email": email, "password": PASSWORD}
-    )
+    duplicate = client.post("/api/v1/auth/register", json={"email": email, "password": PASSWORD})
     assert duplicate.status_code == 409
 
 
@@ -210,3 +213,63 @@ def test_validation_does_not_echo_password(client: TestClient) -> None:
     )
     assert response.status_code == 422
     assert "secret-test-password" not in response.text
+
+
+def test_etf_ingestion_and_authenticated_reads(
+    client: TestClient, account: User, db: Session, tmp_path: Path
+) -> None:
+    from test_market_data import sample
+
+    path = tmp_path / "etfs.json"
+    path.write_text(json.dumps([sample()]), encoding="utf-8")
+    connector = JsonFileConnector(path)
+    first = ingest(db, connector)
+    db.commit()
+    assert ingest(db, connector) == first
+    db.commit()
+    query = "ticker=test&exchange=xnas&source=fixture"
+    assert client.get(f"/api/v1/market-data/etfs/latest?{query}").status_code == 401
+    login(client, account)
+    result = client.get(f"/api/v1/market-data/etfs/latest?{query}")
+    assert result.status_code == 200
+    assert result.json()["holdings_coverage"] == "65.2"
+    assert result.json()["id"] == str(first[0])
+    assert client.get(f"/api/v1/market-data/etfs/snapshots/{first[0]}").json() == result.json()
+
+    # A correction remains separately addressable, even within one transaction.
+    path.write_text(json.dumps([sample() | {"name": "Corrected ETF name"}]), encoding="utf-8")
+    correction = ingest(db, connector)
+    assert correction != first
+    assert latest(db, "TEST", "XNAS", "fixture").id == correction[0]
+    assert db.get(EtfDataSnapshot, first[0]).payload["name"] == "Synthetic ETF"
+
+    # Backfilled historical data must not replace the most recent snapshot.
+    older = sample() | {
+        "as_of": "2026-09-01T20:00:00Z",
+        "quote": None,
+        "holdings": None,
+        "holdings_as_of": None,
+    }
+    path.write_text(json.dumps([older]), encoding="utf-8")
+    ingest(db, connector)
+    assert latest(db, "TEST", "XNAS", "fixture").id == correction[0]
+    assert latest(db, "TEST", "XLON", "fixture") is None
+    assert latest(db, "TEST", "XNAS", "another-source") is None
+    assert (
+        client.get(
+            "/api/v1/market-data/etfs/latest?" + query.replace("test", "missing")
+        ).status_code
+        == 404
+    )
+    assert client.get(f"/api/v1/market-data/etfs/snapshots/{uuid4()}").status_code == 404
+
+
+def test_etf_invalid_batch_does_not_persist(db: Session, tmp_path: Path) -> None:
+    from pydantic import ValidationError
+    from test_market_data import sample
+
+    path = tmp_path / "invalid.json"
+    path.write_text(json.dumps([sample(), sample() | {"currency": "invalid"}]), encoding="utf-8")
+    with pytest.raises(ValidationError):
+        ingest(db, JsonFileConnector(path))
+    assert latest(db, "TEST", "XNAS", "fixture") is None

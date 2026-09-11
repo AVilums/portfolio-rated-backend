@@ -1,0 +1,19 @@
+[
+  {
+    "instrument_type": "ETF",
+    "ticker": "DEMO",
+    "exchange": "XNAS",
+    "currency": "USD",
+    "name": "Synthetic example ETF - not market data",
+    "source": "example",
+    "as_of": "2026-09-10T20:00:00Z",
+    "asset_class": "equity",
+    "expense_ratio": "0.15",
+    "quote": {"price": "100.25", "as_of": "2026-09-10T20:00:00Z"},
+    "holdings_as_of": "2026-09-09T20:00:00Z",
+    "holdings": [
+      {"identifier": "example-company-a", "name": "Example company A", "weight": "30", "sector": "Technology", "country": "US"},
+      {"identifier": "example-company-b", "name": "Example company B", "weight": "20", "sector": "Industrials", "country": "GB"}
+    ]
+  }
+]

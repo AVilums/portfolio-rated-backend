@@ -12,12 +12,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from risk_platform.config import get_settings
-from risk_platform.database import get_db
+from risk_platform.database import Db as Db
 from risk_platform.models import LoginSession, User
 
 COOKIE_NAME = "portfolio_session"
 PASSWORD_ITERATIONS = 600_000
-Db = Annotated[Session, Depends(get_db)]
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
