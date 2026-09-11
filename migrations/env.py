@@ -3,9 +3,11 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import create_engine, pool
 
+from risk_platform.auth import models as auth_models  # noqa: F401
 from risk_platform.config import get_settings
+from risk_platform.database import Base
 from risk_platform.market_data import models as market_data_models  # noqa: F401
-from risk_platform.models import Base
+from risk_platform.portfolio import models as portfolio_models  # noqa: F401
 
 if context.config.config_file_name:
     fileConfig(context.config.config_file_name)

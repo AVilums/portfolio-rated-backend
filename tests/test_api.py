@@ -10,23 +10,25 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
-from risk_platform.auth import COOKIE_NAME, hash_password, token_hash
+from risk_platform.auth.dependencies import COOKIE_NAME
+from risk_platform.auth.models import LoginSession, User
+from risk_platform.auth.security import hash_password, token_hash
 from risk_platform.config import get_settings
 from risk_platform.database import get_db
 from risk_platform.main import app
 from risk_platform.market_data.connectors import JsonFileConnector
 from risk_platform.market_data.models import EtfDataSnapshot
-from risk_platform.market_data.service import ingest, latest
-from risk_platform.models import LoginSession, Report, User
+from risk_platform.market_data.repository import ingest, latest
+from risk_platform.portfolio.models import Report
 
 pytestmark = pytest.mark.integration
 HEADERS = {"X-Requested-With": "PortfolioRated"}
 PASSWORD = "test-account-password"
 PAYLOAD = {
     "positions": [
-        {"ticker": " avwc ", "allocation": 60},
-        {"ticker": "AVWS", "allocation": 25},
-        {"ticker": "AVEM", "allocation": 15},
+        {"ticker": " avwc ", "allocation": 60, "average_price": 100},
+        {"ticker": "AVWS", "allocation": 25, "average_price": 50},
+        {"ticker": "AVEM", "allocation": 15, "average_price": 25},
     ]
 }
 
@@ -49,6 +51,7 @@ def db() -> Iterator[Session]:
 @pytest.fixture
 def client(db: Session, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "")
     get_settings.cache_clear()
     app.dependency_overrides[get_db] = lambda: db
     with TestClient(app, base_url="http://testserver", headers=HEADERS) as client:
@@ -138,9 +141,13 @@ def test_invalid_requests_are_not_saved(client: TestClient, account: User, db: S
     login(client, account)
     for positions in [
         [],
-        [{"ticker": "AVWC", "allocation": 99}],
-        [{"ticker": "AVWC", "allocation": 50}, {"ticker": "avwc", "allocation": 50}],
-        [{"ticker": "AVWC", "allocation": 99.999}],
+        [{"ticker": "AVWC", "allocation": 99, "average_price": 10}],
+        [
+            {"ticker": "AVWC", "allocation": 50, "average_price": 10},
+            {"ticker": "avwc", "allocation": 50, "average_price": 10},
+        ],
+        [{"ticker": "AVWC", "allocation": 99.999, "average_price": 10}],
+        [{"ticker": "AVWC", "allocation": 100}],
     ]:
         assert (
             client.post("/api/v1/portfolio/analyse", json={"positions": positions}).status_code
@@ -235,6 +242,14 @@ def test_etf_ingestion_and_authenticated_reads(
     assert result.json()["holdings_coverage"] == "65.2"
     assert result.json()["id"] == str(first[0])
     assert client.get(f"/api/v1/market-data/etfs/snapshots/{first[0]}").json() == result.json()
+    report = client.post(
+        "/api/v1/portfolio/analyse",
+        json={"positions": [{"ticker": "TEST", "allocation": 100, "average_price": 100}]},
+    )
+    assert report.status_code == 201
+    assert report.json()["analysis"]["data_coverage"] == 100
+    assert report.json()["analysis"]["etfs"][0]["snapshot_id"] == str(first[0])
+    assert report.json()["analysis"]["etfs"][0]["price_change"] == 23.45
 
     # A correction remains separately addressable, even within one transaction.
     path.write_text(json.dumps([sample() | {"name": "Corrected ETF name"}]), encoding="utf-8")

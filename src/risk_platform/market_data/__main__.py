@@ -12,7 +12,7 @@ from risk_platform.market_data.connectors import (
     EtfListing,
     JsonFileConnector,
 )
-from risk_platform.market_data.service import ingest
+from risk_platform.market_data.repository import ingest
 
 
 def main() -> None:

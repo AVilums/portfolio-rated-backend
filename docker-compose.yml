@@ -21,18 +21,18 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://risk:risk@postgres:5432/risk
       APP_ENV: local
-      INITIAL_EMAIL: ${INITIAL_EMAIL:-demo@example.com}
-      INITIAL_PASSWORD: ${INITIAL_PASSWORD:-local-portfolio-password}
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["sh", "-c", "alembic upgrade head && python -m risk_platform.seed"]
+    command: ["alembic", "upgrade", "head"]
 
   api:
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg://risk:risk@postgres:5432/risk
       APP_ENV: local
+      ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY:-}
+      MARKET_DATA_MAX_AGE_HOURS: ${MARKET_DATA_MAX_AGE_HOURS:-24}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:

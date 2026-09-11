@@ -12,36 +12,57 @@ docker compose up --build -d
 
 Web app: http://localhost:8080
 API docs: http://localhost:8000/api/docs
-Local login: `demo@example.com` / `local-portfolio-password`
 
-Compose starts PostgreSQL, applies migrations, creates the initial account if
-missing, then starts the API and frontend. PostgreSQL data lives in a named volume.
-The database has no host port. `docker compose down` preserves the volume.
-
-Local credentials appear only in the development Compose configuration.
-Override `INITIAL_EMAIL` and `INITIAL_PASSWORD` before first startup if desired.
-Seeding is idempotent and never replaces an existing password.
+Compose starts PostgreSQL, applies migrations, then starts the API and frontend.
+Create the first account through the web registration form. PostgreSQL data lives
+in a named volume. `docker compose down` preserves the volume.
 
 ## Structure
 
 ```text
 src/risk_platform/
-  config.py       Environment configuration
-  database.py     Engine and per-request database session
-  models.py       Users, login sessions, report snapshots
-  auth.py         Password verification, sessions, login throttling
-  portfolio/     Separate schemas, allocation calculations and report routes
-  market_data/   ETF connector contract, JSON import, storage and read routes
-  main.py         Application, request protection and safe errors
-  seed.py         Explicit initial-account creation
-migrations/       Versioned schema changes
-tests/            Calculation and PostgreSQL API tests
+  api/
+    health.py        Database readiness endpoint
+    http.py          Request protection and safe exception responses
+  auth/
+    security.py      Password and token primitives
+    schemas.py       Request and response contracts
+    models.py        Account and login-session tables
+    service.py       Registration, login and session use cases
+    dependencies.py  Current-user HTTP dependency
+    routes.py        Thin FastAPI adapter
+  portfolio/
+    schemas.py       Portfolio and report contracts
+    analysis.py      Pure portfolio calculations
+    models.py        Immutable report table
+    service.py       Create and retrieve report use cases
+    routes.py        Thin FastAPI adapter
+  market_data/
+    schemas.py       Provider-independent ETF snapshot contract
+    connectors.py    Provider port and concrete adapters
+    models.py        Snapshot table
+    repository.py    Snapshot persistence and queries
+    service.py       Live refresh orchestration
+    routes.py        Thin FastAPI adapter
+  config.py          Environment configuration
+  database.py        SQLAlchemy registry, engine and request session
+  application.py     FastAPI construction and module registration
+  main.py            Minimal ASGI export
+migrations/          Versioned schema changes
+tests/               Calculation and PostgreSQL API tests
 ```
 
-There are no repository/service wrappers, async database plumbing, Kubernetes
-manifests, or metrics stack. The original `0001_initial` migration is preserved
-for compatibility with existing databases. Its tables are unused by this app;
-`0002_application` adds the three active tables without modifying existing data.
+This is a feature-first, light clean architecture. Each feature keeps its contracts,
+rules, persistence and HTTP adapter together. Routes translate HTTP and delegate to
+services; services implement use cases; models and repositories own SQLAlchemy;
+pure calculations and security primitives do not import FastAPI or SQLAlchemy.
+Concrete provider adapters implement the small `EtfConnector` protocol.
+
+The design deliberately avoids generic base repositories, dependency-injection
+frameworks and one class per use case. Add those only when a real second
+implementation needs the abstraction. The original `0001_initial` migration is
+preserved for compatibility with existing databases. Its tables are unused by this
+app; `0002_application` adds the three active tables without modifying existing data.
 
 ## API
 
@@ -70,14 +91,16 @@ cookies. Five failed attempts lock a known account for five minutes.
 
 ## Calculations
 
-For allocation fractions `w`, concentration is `100 Ã— sum(wÂ²)`; effective
-positions is `1 / sum(wÂ²)`. Lower concentration means more evenly spread entered
+For allocation fractions `w`, concentration is `100 * sum(w^2)`; effective
+positions is `1 / sum(w^2)`. Lower concentration means more evenly spread entered
 weights. A single position yields concentration 100 and one effective position.
 Results use decimal arithmetic and round to two decimal places.
 
-These are allocation statistics, not an assessment of investment quality or risk.
-Inputs cannot reveal ETF overlap, geography, correlations or underlying holdings.
-Reports store normalized inputs and a versioned analysis snapshot.
+These are descriptive statistics, not an assessment of investment quality or risk.
+When ETF holdings are available, the report also calculates constituent exposure by
+multiplying ETF weight by holding weight. It does not infer missing holdings,
+geography, correlations or total return. Reports store normalized inputs, referenced
+market-data IDs and a versioned analysis snapshot.
 
 ## Checks
 
@@ -106,21 +129,22 @@ database, set `APP_ENV=local`, apply `alembic upgrade head`, and run
 ## ETF data foundation (MVP1)
 
 The first market-data module supports ETFs only. It stores source-attributed,
-versioned snapshots in PostgreSQL independently of user portfolios. The existing
-allocation report API remains compatible; ETF report calculations and the average
-purchase price input are the next layer, not part of this ingestion step.
+versioned snapshots in PostgreSQL independently of user portfolios. Portfolio
+reports require ticker, current weight and average purchase price, then embed the
+ETF analysis and the IDs of all market-data snapshots used.
 
 Data flows through `EtfConnector.fetch()` -> validated `EtfSnapshot` objects ->
-`ingest()` -> `etf_data_snapshots`. New provider adapters implement the connector
-protocol; database writes and report calculations do not belong in adapters.
+`repository.ingest()` -> `etf_data_snapshots`. New provider adapters implement the
+connector protocol; database writes and report calculations do not belong in adapters.
 `ingest()` uses a savepoint and leaves the commit to its caller. Invalid batches
 do not partially import. Exact normalized-payload retries return existing IDs;
 corrections create new snapshots. Latest reads use source `as_of` time, then
 ingestion time, so historical backfills do not replace newer data.
 
 Connectors are available for a local UTF-8 JSON array and Alpha Vantage's ETF
-profile plus global quote APIs. The live connector requires a free API key and
-makes two provider requests per ETF. No scheduler is configured yet. The example
+profile plus global quote APIs. The live connector requires a free API key. Request
+count varies because unseen symbols may need discovery and non-US listings do not
+request the US-focused profile endpoint. No scheduler is configured yet. The example
 file is synthetic, not real ETF data.
 
 From the backend directory, with `DATABASE_URL` set for your PostgreSQL database:
@@ -144,9 +168,9 @@ python -m risk_platform.market_data --alpha-vantage-symbol QQQ \
 
 The connector uses only the standard library HTTP client, enforces a 10-second
 timeout, and never includes the API key in raised errors. Provider throttling,
-invalid credentials and malformed responses fail the whole import before commit.
-Alpha Vantage currently documents 25 requests per day for free keys, so one run
-uses two of those requests.
+invalid credentials and malformed quote responses fail the whole import before
+commit. Missing ETF profiles produce a valid quote-only snapshot. Alpha Vantage
+currently documents 25 requests per day for free keys.
 
 For the local Compose database accessed from the host, use port **5433**. The
 command prints snapshot IDs after commit. Import is an operator CLI action;
@@ -185,3 +209,21 @@ The schema is defined in `market_data/schemas.py`; an example is provided in
 
 Migration `0003_etf_data` adds only the snapshot table. Existing reports and legacy
 market tables are preserved. No live data is seeded automatically.
+
+When a portfolio report is submitted, the API looks up each ticker in local ETF
+storage. Data observed within `MARKET_DATA_MAX_AGE_HOURS` (24 by default) is reused.
+Missing or older data is refreshed through Alpha Vantage when its key is configured,
+then stored and referenced in the immutable report snapshot. Provider failure does
+not discard the report: older data is marked stale and missing data is marked
+unavailable. The client shows coverage explicitly.
+
+Ticker-only live refreshes use Alpha Vantage symbol search and persist the resolved
+provider symbol, exchange and currency with the snapshot. Subsequent refreshes reuse
+that identity. When search has no match, the provider's bare-symbol US convention is
+used. Import listing metadata through JSON or the operator CLI when a ticker is
+ambiguous across exchanges.
+
+MVP1 portfolio positions require `ticker`, `allocation` (current portfolio weight)
+and `average_price`. The report adds latest close versus average price, expense ratio,
+holdings coverage, five available constituents per ETF, and the ten largest combined
+underlying exposures. Price change excludes distributions, fees and taxes.

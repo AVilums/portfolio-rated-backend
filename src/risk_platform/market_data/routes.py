@@ -2,11 +2,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 
-from risk_platform.auth import CurrentUser
+from risk_platform.auth.dependencies import CurrentUser
 from risk_platform.database import Db
 from risk_platform.market_data.models import EtfDataSnapshot
+from risk_platform.market_data.repository import latest, response
 from risk_platform.market_data.schemas import StoredSnapshot
-from risk_platform.market_data.service import latest, response
 
 router = APIRouter(prefix="/market-data/etfs", tags=["ETF market data"])
 
