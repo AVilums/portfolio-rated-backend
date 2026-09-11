@@ -30,6 +30,7 @@ class EtfListing(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     ticker: str = Field(pattern=r"^[A-Z0-9][A-Z0-9.:-]{0,39}$")
+    provider_symbol: str | None = Field(default=None, pattern=r"^[A-Z0-9][A-Z0-9.:-]{0,39}$")
     exchange: str = Field(pattern=r"^[A-Z0-9][A-Z0-9.:-]{0,39}$")
     currency: str = Field(pattern=r"^[A-Z]{3}$")
     name: str | None = Field(default=None, min_length=1, max_length=300)
@@ -88,31 +89,79 @@ class AlphaVantageConnector:
         fetched_at = self.clock()
         if fetched_at.tzinfo is None or fetched_at.utcoffset() is None:
             raise ConnectorError("Connector clock must return a timezone-aware timestamp.")
-        profile = self._request("ETF_PROFILE")
-        quote_data = self._request("GLOBAL_QUOTE")
+        provider_symbol, exchange, currency, name = self._resolve_listing()
+        quote_data = self._request("GLOBAL_QUOTE", symbol=provider_symbol)
         quote = self._parse_quote(quote_data)
+        profile: JsonObject = {}
+        if exchange in {"US", "USA", "UNITED STATES", "XNAS", "XNYS", "ARCX"}:
+            try:
+                profile = self._request("ETF_PROFILE", symbol=provider_symbol)
+            except ConnectorError:
+                # Alpha Vantage has quotes for more listings than ETF profiles. A quote-only
+                # snapshot is still useful and accurately represents the missing components.
+                pass
         holdings = self._parse_holdings(profile)
         expense_ratio = self._optional_decimal(profile, "net_expense_ratio")
         return [
             EtfSnapshot(
                 ticker=self.listing.ticker,
-                exchange=self.listing.exchange,
-                currency=self.listing.currency,
-                name=self.listing.name or self.listing.ticker,
+                provider_symbol=provider_symbol,
+                exchange=exchange,
+                currency=currency,
+                name=name,
                 source=self.source,
                 as_of=fetched_at,
                 expense_ratio=expense_ratio,
                 quote=quote,
                 holdings=holdings,
                 # ETF_PROFILE has no composition date; record when we observed it.
-                holdings_as_of=fetched_at,
+                holdings_as_of=fetched_at if holdings is not None else None,
             )
         ]
 
-    def _request(self, function: str) -> JsonObject:
-        query = urlencode(
-            {"function": function, "symbol": self.listing.ticker, "apikey": self.api_key}
-        )
+    def _resolve_listing(self) -> tuple[str, str, str, str]:
+        if self.listing.provider_symbol is not None:
+            return (
+                self.listing.provider_symbol,
+                self.listing.exchange,
+                self.listing.currency,
+                self.listing.name or self.listing.ticker,
+            )
+        if self.listing.exchange != "UNKNOWN" and self.listing.currency != "XXX":
+            return (
+                self.listing.ticker,
+                self.listing.exchange,
+                self.listing.currency,
+                self.listing.name or self.listing.ticker,
+            )
+
+        search = self._request("SYMBOL_SEARCH", keywords=self.listing.ticker)
+        matches = search.get("bestMatches")
+        if not isinstance(matches, list):
+            matches = []
+        candidates: list[tuple[bool, Decimal, str, str, str, str]] = []
+        for raw in matches:
+            if not isinstance(raw, dict):
+                continue
+            symbol = str(raw.get("1. symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            exchange = str(raw.get("4. region") or "UNKNOWN").strip().upper()
+            currency = str(raw.get("8. currency") or "XXX").strip().upper()
+            name = str(raw.get("2. name") or self.listing.name or self.listing.ticker).strip()
+            try:
+                score = Decimal(str(raw.get("9. matchScore") or 0))
+            except InvalidOperation:
+                score = Decimal(0)
+            # Prefer Xetra over regional German listings when the provider returns both.
+            candidates.append((exchange == "XETRA", score, symbol, exchange, currency, name))
+        if candidates:
+            _, _, symbol, exchange, currency, name = max(candidates)
+            return symbol, exchange, currency, name
+        return self.listing.ticker, "US", "USD", self.listing.name or self.listing.ticker
+
+    def _request(self, function: str, **parameters: str) -> JsonObject:
+        query = urlencode({"function": function, **parameters, "apikey": self.api_key})
         try:
             value = json.loads(self.http_get(f"{ALPHA_VANTAGE_URL}?{query}", self.timeout))
         except (json.JSONDecodeError, UnicodeDecodeError) as error:
@@ -139,10 +188,12 @@ class AlphaVantageConnector:
             raise ConnectorError("Alpha Vantage returned an invalid ETF quote.") from error
         return Quote(price=price, as_of=quote_date)
 
-    def _parse_holdings(self, profile: JsonObject) -> list[Holding]:
+    def _parse_holdings(self, profile: JsonObject) -> list[Holding] | None:
         raw_holdings = profile.get("holdings")
+        if raw_holdings is None:
+            return None
         if not isinstance(raw_holdings, list):
-            raise ConnectorError("Alpha Vantage returned no ETF holdings.")
+            raise ConnectorError("Alpha Vantage returned invalid ETF holdings.")
         holdings: list[Holding] = []
         identifiers: set[str] = set()
         for index, raw in enumerate(raw_holdings):

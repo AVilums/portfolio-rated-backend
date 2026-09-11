@@ -31,6 +31,7 @@ class EtfSnapshot(DataModel):
     schema_version: Literal[1] = 1
     instrument_type: Literal["ETF"] = "ETF"
     ticker: Code
+    provider_symbol: Code | None = None
     exchange: Code
     currency: str = Field(pattern=r"^[A-Z]{3}$")
     name: str = Field(min_length=1, max_length=300)
